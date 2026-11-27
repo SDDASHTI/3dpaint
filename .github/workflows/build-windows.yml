@@ -1,0 +1,79 @@
+
+name: Build ArmorPaint Windows Latest
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout ArmorPaint
+        uses: actions/checkout@v4
+        with:
+          repository: armory3d/armorpaint
+          ref: main
+          fetch-depth: 1
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Check compiler
+        shell: pwsh
+        run: |
+          clang-cl --version
+          cl
+
+      - name: Build ArmorPaint
+        shell: pwsh
+        working-directory: paint
+        run: |
+          ..\base\make --compile
+
+      - name: Locate build output
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path . -Filter ArmorPaint.exe -Recurse |
+            Where-Object { $_.FullName -match 'build' } |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            throw "ArmorPaint.exe was not found."
+          }
+
+          $root = $exe.Directory.FullName
+          $data = Join-Path $root "data"
+
+          if (-not (Test-Path $data)) {
+            throw "Required data directory was not found."
+          }
+
+          New-Item -ItemType Directory -Force -Path "package" | Out-Null
+          Copy-Item $exe.FullName "package\ArmorPaint.exe"
+          Copy-Item $data "package\data" -Recurse
+
+      - name: Package Windows build
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "package\*" `
+            -DestinationPath "ArmorPaint-Windows-x64.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArmorPaint-Windows-x64
+          path: ArmorPaint-Windows-x64.zip
+          retention-days: 30

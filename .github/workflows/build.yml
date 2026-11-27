@@ -17,18 +17,23 @@ jobs:
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Generate project files
-        working-directory: paint
-        run: ..\base\make
+      - name: Build ArmorPaint
+        shell: cmd
+        run: |
+          cd paint
+          ..\base\make
+          msbuild build\ArmorPaint.sln /p:Configuration=Release /p:Platform=x64
 
-      - name: Build solution
-        working-directory: paint
-        run: msbuild build\ArmorPaint.sln -p:Configuration=Release -p:Platform=x64
+      - name: Package output
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Get-ChildItem -Path . -Recurse -Include "ArmorPaint.exe","krom.exe","*.dll","data.arm","*.pak" | Copy-Item -Destination dist -Force
+          Get-ChildItem -Path dist
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: armorpaint-windows-x64
-          path: |
-            paint/build/x64/Release/
-            paint/build/krom/
+          if-no-files-found: error
+          path: dist/

@@ -1,5 +1,5 @@
 
-name: Build ArmorPaint Windows x64
+name: Build ArmorPaint Windows Latest
 
 on:
   workflow_dispatch:
@@ -9,15 +9,12 @@ permissions:
 
 jobs:
   build:
-    name: Build ArmorPaint
+    name: Build ArmorPaint Windows x64
     runs-on: windows-latest
     timeout-minutes: 90
 
     steps:
-      # --------------------------------------------------
       # 1. Download latest source
-      # --------------------------------------------------
-
       - name: Checkout ArmorPaint
         uses: actions/checkout@v4
         with:
@@ -25,19 +22,13 @@ jobs:
           ref: main
           fetch-depth: 1
 
-      # --------------------------------------------------
-      # 2. Setup Visual Studio
-      # --------------------------------------------------
-
+      # 2. Setup Visual Studio compiler
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # --------------------------------------------------
       # 3. Install LLVM
-      # --------------------------------------------------
-
       - name: Install LLVM
         shell: pwsh
         run: |
@@ -48,195 +39,108 @@ jobs:
 
           $llvm = "C:\Program Files\LLVM\bin"
 
-          if (-not (Test-Path "$llvm\clang-cl.exe")) {
-            throw "LLVM installation failed."
+          if (!(Test-Path "$llvm\clang-cl.exe")) {
+            throw "clang-cl was not installed."
           }
 
           Add-Content $env:GITHUB_PATH $llvm
 
-      # --------------------------------------------------
-      # 4. Install Vulkan SDK
-      # --------------------------------------------------
-
-      - name: Install Vulkan SDK
+      # 4. Verify compiler
+      - name: Verify Build Tools
         shell: pwsh
         run: |
-          winget install --id KhronosGroup.VulkanSDK --exact `
-            --silent `
-            --accept-package-agreements `
-            --accept-source-agreements
-
-          $sdkRoot = "C:\VulkanSDK"
-
-          $sdk = Get-ChildItem $sdkRoot -Directory |
-            Sort-Object Name -Descending |
-            Select-Object -First 1
-
-          if (-not $sdk) {
-            throw "Vulkan SDK was not found."
-          }
-
-          $include = Join-Path $sdk.FullName "Include"
-          $lib = Join-Path $sdk.FullName "Lib"
-          $bin = Join-Path $sdk.FullName "Bin"
-
-          $header = Join-Path $include "vulkan\vulkan_core.h"
-
-          if (-not (Test-Path $header)) {
-            throw "Missing Vulkan header: $header"
-          }
-
-          if (-not (Test-Path $lib)) {
-            throw "Vulkan library directory missing."
-          }
-
-          "VULKAN_SDK=$($sdk.FullName)" |
-            Out-File $env:GITHUB_ENV -Append
-
-          "VK_SDK_PATH=$($sdk.FullName)" |
-            Out-File $env:GITHUB_ENV -Append
-
-          Add-Content $env:GITHUB_PATH $bin
-
-          Write-Host "Vulkan SDK: $($sdk.FullName)"
-          Write-Host "Vulkan headers verified."
-
-      # --------------------------------------------------
-      # 5. Verify build environment
-      # --------------------------------------------------
-
-      - name: Verify Build Environment
-        shell: pwsh
-        run: |
-          Write-Host "Checking MSVC..."
           cl
-
-          Write-Host "Checking Clang..."
           clang-cl --version
 
-          Write-Host "Checking Vulkan..."
-          Write-Host $env:VULKAN_SDK
-
-          $header = Join-Path $env:VULKAN_SDK `
-            "Include\vulkan\vulkan_core.h"
-
-          if (-not (Test-Path $header)) {
-            throw "Vulkan header verification failed."
-          }
-
-      # --------------------------------------------------
-      # 6. Generate Visual Studio project
-      # --------------------------------------------------
-
-      - name: Generate Project
+      # 5. Build ArmorPaint using official build system
+      - name: Compile ArmorPaint
         shell: pwsh
         working-directory: paint
         run: |
-          ..\base\make
+          Write-Host "Building ArmorPaint from main..."
+          Write-Host "Using base/make --compile"
 
-          $solution = "build\ArmorPaint.sln"
-
-          if (-not (Test-Path $solution)) {
-            throw "ArmorPaint.sln was not generated."
-          }
-
-          Write-Host "Solution generated successfully."
-
-      # --------------------------------------------------
-      # 7. Build ArmorPaint
-      # --------------------------------------------------
-
-      - name: Compile ArmorPaint
-        shell: pwsh
-        run: |
-          $solution = "paint\build\ArmorPaint.sln"
-
-          if (-not (Test-Path $solution)) {
-            throw "Solution file not found: $solution"
-          }
-
-          $sdk = $env:VULKAN_SDK
-
-          $include = Join-Path $sdk "Include"
-          $lib = Join-Path $sdk "Lib"
-
-          $env:INCLUDE = "$include;$env:INCLUDE"
-          $env:LIB = "$lib;$env:LIB"
-
-          Write-Host "Compiling ArmorPaint..."
-
-          msbuild $solution `
-            /m `
-            /p:Configuration=Release `
-            /p:Platform=x64 `
-            /p:VULKAN_SDK="$sdk" `
-            /v:minimal
+          ..\base\make --compile
 
           if ($LASTEXITCODE -ne 0) {
             throw "ArmorPaint compilation failed."
           }
 
-      # --------------------------------------------------
-      # 8. Locate executable
-      # --------------------------------------------------
+          Write-Host "Build command completed."
 
+      # 6. Locate executable
       - name: Locate Build Output
-        id: locate
         shell: pwsh
         run: |
+          Write-Host "Searching for ArmorPaint.exe..."
+
           $exe = Get-ChildItem paint -Filter ArmorPaint.exe -Recurse |
             Where-Object {
-              $_.FullName -match '\\(Release|build)\\'
+              $_.FullName -match '\\Release\\'
             } |
             Select-Object -First 1
 
-          if (-not $exe) {
+          if (!$exe) {
             $exe = Get-ChildItem paint -Filter ArmorPaint.exe -Recurse |
               Select-Object -First 1
           }
 
-          if (-not $exe) {
+          if (!$exe) {
+            Write-Host "Files found in build directory:"
+            Get-ChildItem paint\build -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName
+
             throw "ArmorPaint.exe was not generated."
           }
 
-          $output = $exe.Directory.FullName
+          Write-Host "Found executable:"
+          Write-Host $exe.FullName
 
-          Write-Host "Executable: $($exe.FullName)"
-          Write-Host "Output directory: $output"
-
-          "OUTPUT_DIR=$output" |
+          "EXE_PATH=$($exe.FullName)" |
             Out-File $env:GITHUB_ENV -Append
 
-      # --------------------------------------------------
-      # 9. Package application
-      # --------------------------------------------------
-
+      # 7. Package executable and data
       - name: Package ArmorPaint
         shell: pwsh
         run: |
-          $output = $env:OUTPUT_DIR
+          $exe = $env:EXE_PATH
 
-          $package = "package"
+          $data = "paint\build\out\data"
 
-          New-Item -ItemType Directory -Force $package |
-            Out-Null
+          if (!(Test-Path $data)) {
+            Write-Host "Searching for data directory..."
 
-          Copy-Item "$output\*" $package -Recurse -Force
+            $found = Get-ChildItem paint\build `
+              -Directory -Filter data -Recurse |
+              Select-Object -First 1
+
+            if (!$found) {
+              throw "ArmorPaint data directory was not found."
+            }
+
+            $data = $found.FullName
+          }
+
+          Write-Host "Executable: $exe"
+          Write-Host "Data: $data"
+
+          New-Item -ItemType Directory `
+            -Force package | Out-Null
+
+          Copy-Item $exe package\ArmorPaint.exe
+          Copy-Item $data package\data -Recurse
 
           Compress-Archive `
-            -Path "$package\*" `
-            -DestinationPath "ArmorPaint-Windows-x64.zip" `
+            -Path package\* `
+            -DestinationPath ArmorPaint-Windows-x64.zip `
             -CompressionLevel Optimal
 
-          if (-not (Test-Path "ArmorPaint-Windows-x64.zip")) {
+          if (!(Test-Path ArmorPaint-Windows-x64.zip)) {
             throw "ZIP creation failed."
           }
 
-      # --------------------------------------------------
-      # 10. Upload artifact
-      # --------------------------------------------------
-
-      - name: Upload Windows Build
+      # 8. Upload final artifact
+      - name: Upload ArmorPaint
         uses: actions/upload-artifact@v4
         with:
           name: ArmorPaint-Windows-x64

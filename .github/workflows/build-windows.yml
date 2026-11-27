@@ -1,200 +1,48 @@
-
-name: Build ArmorPaint Windows x64
+name: Build ArmorPaint
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: read
+  push:
+    branches:
+      - main
 
 jobs:
-  build:
-    name: Build ArmorPaint
-    runs-on: windows-latest
-    timeout-minutes: 90
-
+  build-linux:
+    runs-on: ubuntu-latest
     steps:
-      # 1. Checkout latest source
-      - name: Checkout ArmorPaint
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: armory3d/armorpaint
-          ref: main
-          fetch-depth: 1
+          submodules: recursive
 
-      # 2. Setup Visual Studio
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      # 3. Install LLVM
-      - name: Install LLVM
-        shell: pwsh
+      - name: Install build and graphics dependencies
         run: |
-          winget install --id LLVM.LLVM --exact `
-            --silent `
-            --accept-package-agreements `
-            --accept-source-agreements
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            lld \
+            libvulkan-dev \
+            vulkan-tools \
+            mesa-vulkan-drivers \
+            libx11-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libgl1-mesa-dev \
+            libasound2-dev
 
-          $llvm = "C:\Program Files\LLVM\bin"
-
-          if (!(Test-Path "$llvm\clang-cl.exe")) {
-            throw "LLVM installation failed."
-          }
-
-          Add-Content $env:GITHUB_PATH $llvm
-
-      # 4. Install official Vulkan SDK
-      - name: Install Vulkan SDK
-        shell: pwsh
-        run: |
-          $installer = "$env:RUNNER_TEMP\vulkan-sdk.exe"
-
-          Write-Host "Downloading Vulkan SDK..."
-
-          Invoke-WebRequest `
-            -Uri "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe" `
-            -OutFile $installer
-
-          Write-Host "Installing Vulkan SDK..."
-
-          $process = Start-Process `
-            -FilePath $installer `
-            -ArgumentList @(
-              "--accept-licenses",
-              "--default-answer",
-              "--confirm-command",
-              "install"
-            ) `
-            -Wait `
-            -PassThru
-
-          if ($process.ExitCode -ne 0) {
-            throw "Vulkan SDK installer failed: $($process.ExitCode)"
-          }
-
-          $sdkRoot = "C:\VulkanSDK"
-
-          $sdk = Get-ChildItem $sdkRoot -Directory |
-            Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
-            Sort-Object { [version]$_.Name } -Descending |
-            Select-Object -First 1
-
-          if (!$sdk) {
-            throw "Vulkan SDK directory not found."
-          }
-
-          $include = Join-Path $sdk.FullName "Include"
-          $lib = Join-Path $sdk.FullName "Lib"
-          $bin = Join-Path $sdk.FullName "Bin"
-
-          $header = Join-Path $include "vulkan\vulkan_core.h"
-
-          if (!(Test-Path $header)) {
-            throw "Vulkan header missing: $header"
-          }
-
-          # Persist SDK variables for following steps
-          "VULKAN_SDK=$($sdk.FullName)" |
-            Out-File $env:GITHUB_ENV -Append
-
-          "VK_SDK_PATH=$($sdk.FullName)" |
-            Out-File $env:GITHUB_ENV -Append
-
-          "INCLUDE=$include;$env:INCLUDE" |
-            Out-File $env:GITHUB_ENV -Append
-
-          "LIB=$lib;$env:LIB" |
-            Out-File $env:GITHUB_ENV -Append
-
-          Add-Content $env:GITHUB_PATH $bin
-
-          Write-Host "Vulkan SDK installed successfully."
-          Write-Host "SDK: $($sdk.FullName)"
-          Write-Host "Header: $header"
-
-      # 5. Verify all dependencies
-      - name: Verify Build Environment
-        shell: pwsh
-        run: |
-          Write-Host "Checking MSVC..."
-          cl
-
-          Write-Host "Checking LLVM..."
-          clang-cl --version
-
-          Write-Host "Checking Vulkan..."
-          Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
-
-          $header = Join-Path $env:VULKAN_SDK `
-            "Include\vulkan\vulkan_core.h"
-
-          if (!(Test-Path $header)) {
-            throw "Vulkan header verification failed."
-          }
-
-          Write-Host "All dependencies verified."
-
-      # 6. Generate Visual Studio project
-      - name: Generate Project
-        shell: pwsh
+      - name: Generate project and build with base/make
         working-directory: paint
         run: |
-          ..\base\make
+          ../base/make
 
-          if (!(Test-Path "build\ArmorPaint.sln")) {
-            throw "ArmorPaint solution was not generated."
-          }
-
-          Write-Host "Visual Studio solution generated."
-
-      # 7. Compile ArmorPaint
-      - name: Compile ArmorPaint
-        shell: pwsh
+      - name: Package build output
         run: |
-          $solution = "paint\build\ArmorPaint.sln"
+          tar -czvf armorpaint-linux-x64.tar.gz paint/build
 
-          if (!(Test-Path $solution)) {
-            throw "Solution file not found."
-          }
-
-          Write-Host "Using Vulkan SDK:"
-          Write-Host $env:VULKAN_SDK
-
-          Write-Host "Compiling ArmorPaint..."
-
-          msbuild $solution `
-            /m `
-            /p:Configuration=Release `
-            /p:Platform=x64 `
-            /v:minimal
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "ArmorPaint compilation failed."
-          }
-
-          Write-Host "Compilation successful."
-
-      # 8. Locate executable
-      - name: Locate Build Output
-        shell: pwsh
-        run: |
-          $exe = Get-ChildItem paint -Filter ArmorPaint.exe -Recurse |
-            Select-Object -First 1
-
-          if (!$exe) {
-            throw "ArmorPaint.exe was not generated."
-          }
-
-          Write-Host "Build output:"
-          Write-Host $exe.FullName
-
-      # 9. Upload build directory
-      - name: Upload Windows Build
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ArmorPaint-Windows-x64
-          path: paint/build/
-          retention-days: 30
+          name: armorpaint-linux-x64
+          path: armorpaint-linux-x64.tar.gz
           if-no-files-found: error

@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Checkout ArmorPaint
+      - name: Checkout latest ArmorPaint
         uses: actions/checkout@v4
         with:
           repository: armory3d/armorpaint
@@ -35,79 +35,40 @@ jobs:
           Add-Content $env:GITHUB_PATH `
             "C:\Program Files\LLVM\bin"
 
-      - name: Install Vulkan SDK
+      - name: Verify compiler
         shell: pwsh
         run: |
-          winget install --id KhronosGroup.VulkanSDK --exact `
-            --silent --accept-package-agreements `
-            --accept-source-agreements
+          clang-cl --version
+          cl
 
-          $sdk = Get-ChildItem "C:\VulkanSDK" -Directory |
-            Sort-Object Name -Descending |
-            Select-Object -First 1
-
-          if (-not $sdk) {
-            throw "Vulkan SDK not found"
-          }
-
-          $include = Join-Path $sdk.FullName "Include"
-          $header = Join-Path $include "vulkan\vulkan_core.h"
-
-          if (-not (Test-Path $header)) {
-            throw "Missing Vulkan header: $header"
-          }
-
-          "VULKAN_SDK=$($sdk.FullName)" |
-            Out-File $env:GITHUB_ENV -Append
-
-          "VK_SDK_PATH=$($sdk.FullName)" |
-            Out-File $env:GITHUB_ENV -Append
-
-          "INCLUDE=$include;$env:INCLUDE" |
-            Out-File $env:GITHUB_ENV -Append
-
-          Add-Content $env:GITHUB_PATH `
-            "$($sdk.FullName)\Bin"
-
-          Write-Host "Vulkan SDK: $($sdk.FullName)"
-          Write-Host "Vulkan headers verified."
-
-      - name: Generate Visual Studio project
+      - name: Build ArmorPaint
         shell: pwsh
         working-directory: paint
         run: |
-          ..\base\make
+          ..\base\make --compile
 
-      - name: Compile ArmorPaint
-        shell: pwsh
-        working-directory: paint\build
-        run: |
-          msbuild ArmorPaint.sln `
-            /m `
-            /p:Configuration=Release `
-            /p:Platform=x64 `
-            /v:minimal
-
-      - name: Find executable and package
+      - name: Locate build output
         shell: pwsh
         run: |
+          Write-Host "Searching for ArmorPaint.exe..."
+
+          Get-ChildItem paint -Filter ArmorPaint.exe -Recurse |
+            ForEach-Object {
+              Write-Host $_.FullName
+            }
+
           $exe = Get-ChildItem paint -Filter ArmorPaint.exe -Recurse |
-            Where-Object { $_.FullName -match '\\Release\\' } |
             Select-Object -First 1
 
           if (-not $exe) {
-            $exe = Get-ChildItem paint -Filter ArmorPaint.exe -Recurse |
-              Select-Object -First 1
+            throw "ArmorPaint.exe was not generated."
           }
 
-          if (-not $exe) {
-            throw "ArmorPaint.exe not found"
-          }
-
-          $data = Join-Path $exe.Directory.FullName "data"
+          $out = $exe.Directory.FullName
+          $data = Join-Path $out "data"
 
           if (-not (Test-Path $data)) {
-            throw "Data folder not found"
+            throw "Data folder not found: $data"
           }
 
           New-Item -ItemType Directory -Force package | Out-Null
@@ -115,8 +76,12 @@ jobs:
           Copy-Item $exe.FullName package\ArmorPaint.exe
           Copy-Item $data package\data -Recurse
 
-          Compress-Archive package\* `
-            ArmorPaint-Windows-x64.zip
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path package\* `
+            -DestinationPath ArmorPaint-Windows-x64.zip
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4

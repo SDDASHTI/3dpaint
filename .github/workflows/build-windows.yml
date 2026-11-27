@@ -3,11 +3,6 @@ name: Build ArmorPaint Windows Latest
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/build-windows.yml"
 
 permissions:
   contents: read
@@ -15,7 +10,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout ArmorPaint
@@ -30,48 +25,100 @@ jobs:
         with:
           arch: x64
 
-      - name: Check compiler
+      - name: Install LLVM
         shell: pwsh
         run: |
-          clang-cl --version
-          cl
+          winget install --id LLVM.LLVM --exact `
+            --silent --accept-package-agreements `
+            --accept-source-agreements
 
-      - name: Build ArmorPaint
+          Add-Content $env:GITHUB_PATH `
+            "C:\Program Files\LLVM\bin"
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          winget install --id KhronosGroup.VulkanSDK --exact `
+            --silent --accept-package-agreements `
+            --accept-source-agreements
+
+          $sdk = Get-ChildItem "C:\VulkanSDK" -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          if (-not $sdk) {
+            throw "Vulkan SDK not found"
+          }
+
+          $include = Join-Path $sdk.FullName "Include"
+          $header = Join-Path $include "vulkan\vulkan_core.h"
+
+          if (-not (Test-Path $header)) {
+            throw "Missing Vulkan header: $header"
+          }
+
+          "VULKAN_SDK=$($sdk.FullName)" |
+            Out-File $env:GITHUB_ENV -Append
+
+          "VK_SDK_PATH=$($sdk.FullName)" |
+            Out-File $env:GITHUB_ENV -Append
+
+          "INCLUDE=$include;$env:INCLUDE" |
+            Out-File $env:GITHUB_ENV -Append
+
+          Add-Content $env:GITHUB_PATH `
+            "$($sdk.FullName)\Bin"
+
+          Write-Host "Vulkan SDK: $($sdk.FullName)"
+          Write-Host "Vulkan headers verified."
+
+      - name: Generate Visual Studio project
         shell: pwsh
         working-directory: paint
         run: |
-          ..\base\make --compile
+          ..\base\make
 
-      - name: Locate build output
+      - name: Compile ArmorPaint
+        shell: pwsh
+        working-directory: paint\build
+        run: |
+          msbuild ArmorPaint.sln `
+            /m `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /v:minimal
+
+      - name: Find executable and package
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path . -Filter ArmorPaint.exe -Recurse |
-            Where-Object { $_.FullName -match 'build' } |
+          $exe = Get-ChildItem paint -Filter ArmorPaint.exe -Recurse |
+            Where-Object { $_.FullName -match '\\Release\\' } |
             Select-Object -First 1
 
           if (-not $exe) {
-            throw "ArmorPaint.exe was not found."
+            $exe = Get-ChildItem paint -Filter ArmorPaint.exe -Recurse |
+              Select-Object -First 1
           }
 
-          $root = $exe.Directory.FullName
-          $data = Join-Path $root "data"
+          if (-not $exe) {
+            throw "ArmorPaint.exe not found"
+          }
+
+          $data = Join-Path $exe.Directory.FullName "data"
 
           if (-not (Test-Path $data)) {
-            throw "Required data directory was not found."
+            throw "Data folder not found"
           }
 
-          New-Item -ItemType Directory -Force -Path "package" | Out-Null
-          Copy-Item $exe.FullName "package\ArmorPaint.exe"
-          Copy-Item $data "package\data" -Recurse
+          New-Item -ItemType Directory -Force package | Out-Null
 
-      - name: Package Windows build
-        shell: pwsh
-        run: |
-          Compress-Archive `
-            -Path "package\*" `
-            -DestinationPath "ArmorPaint-Windows-x64.zip"
+          Copy-Item $exe.FullName package\ArmorPaint.exe
+          Copy-Item $data package\data -Recurse
 
-      - name: Upload build artifact
+          Compress-Archive package\* `
+            ArmorPaint-Windows-x64.zip
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ArmorPaint-Windows-x64

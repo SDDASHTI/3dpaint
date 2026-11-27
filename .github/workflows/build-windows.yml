@@ -1,4 +1,4 @@
-name: Build ArmorPaint
+name: Build ArmorPaint Windows (x64)
 
 on:
   workflow_dispatch:
@@ -7,42 +7,57 @@ on:
       - main
 
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
+  build-windows:
+    runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install build and graphics dependencies
+      - name: Ensure Visual Studio Clang tools are installed
+        shell: pwsh
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang \
-            lld \
-            libvulkan-dev \
-            vulkan-tools \
-            mesa-vulkan-drivers \
-            libx11-dev \
-            libxrandr-dev \
-            libxi-dev \
-            libxcursor-dev \
-            libgl1-mesa-dev \
-            libasound2-dev
+          $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Start-Process -FilePath $vsInstaller -ArgumentList `
+            "modify", "--installPath", "`"$vsPath`"", `
+            "--add", "Microsoft.VisualStudio.Component.VC.Llvm.Clang", `
+            "--add", "Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset", `
+            "--quiet", "--norestart" -Wait
 
-      - name: Generate project and build with base/make
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Generate Visual Studio Solution
         working-directory: paint
-        run: |
-          ../base/make
+        shell: cmd
+        run: ..\base\make
 
-      - name: Package build output
-        run: |
-          tar -czvf armorpaint-linux-x64.tar.gz paint/build
+      - name: Compile ArmorPaint (Release x64)
+        working-directory: paint\build
+        shell: cmd
+        run: msbuild ArmorPaint.sln /p:Configuration=Release /p:Platform=x64 /m
 
-      - name: Upload build artifact
+      - name: Prepare standalone package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "release_pkg"
+          # کپی کردن فایل اجرایی ساخته شده
+          $exeFile = Get-ChildItem -Path "paint\build" -Filter "ArmorPaint.exe" -Recurse | Select-Object -First 1
+          if (-not $exeFile) {
+            Write-Error "ArmorPaint.exe not found!"
+            exit 1
+          }
+          Copy-Item -Path $exeFile.FullName -Destination "release_pkg\"
+          # کپی کردن پوشه data و محتویات out در کنار exe
+          if (Test-Path "paint\build\out") {
+            Copy-Item -Path "paint\build\out\*" -Destination "release_pkg\" -Recurse -Force
+          }
+
+      - name: Upload Windows Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: armorpaint-linux-x64
-          path: armorpaint-linux-x64.tar.gz
+          name: ArmorPaint-Windows-x64
+          path: release_pkg/
           if-no-files-found: error
